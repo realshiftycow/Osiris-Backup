@@ -22,7 +22,7 @@ const nextConfig: NextConfig = {
      WebAssembly engine from its own folder at run time: bundling it would
      move the code away from the engine, so it stays a package, and the
      standalone build is told to bring the two engine files along. */
-  serverExternalPackages: ['ws', 'onnxruntime-web'],
+  serverExternalPackages: ['ws', 'onnxruntime-web', 'gtfs-realtime-bindings'],
   outputFileTracingIncludes: {
     '/api/**': ['./node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.mjs', './node_modules/onnxruntime-web/dist/ort-wasm-simd-threaded.wasm'],
   },

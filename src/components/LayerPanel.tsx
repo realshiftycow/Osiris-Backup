@@ -5,7 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion';
 import {
   Plane, Satellite, Sun, AlertTriangle, Camera,
   CloudLightning, Ship, Network, Database, Ghost,
-  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal
+  Flame, Tv, Radio, Mountain, Anchor, Megaphone, SlidersHorizontal,
+  MapPinned,
 } from 'lucide-react';
 import StyleStudio from './StyleStudio';
 import { TERRAIN_MIN_ZOOM, type TerrainStatus } from '@/lib/map-terrain';
@@ -124,6 +125,7 @@ const LAYER_GROUPS: LayerGroupDef[] = [
       { key: 'global_incidents', label: 'Global Incidents', dataKey: 'gdelt' },
       { key: 'alert_pins', label: 'Live Alert Pins', dataKey: 'alert_pins' },
       { key: 'gdelt_events', label: 'GDELT Events', dataKey: 'gdelt_events' },
+      { key: 'curiosities', label: 'Curiosities Atlas', dataKey: 'curiosities', description: 'Click pins to label · notes save locally' },
     ],
   },
   {
@@ -142,6 +144,22 @@ const LAYER_GROUPS: LayerGroupDef[] = [
     layers: [
       { key: 'cf_outages', label: 'Internet Outages', dataKey: 'cf_outages', requires: 'cloudflare' },
       { key: 'cf_attacks', label: 'Attack Origins', dataKey: 'cf_attack_origins', requires: 'cloudflare' },
+    ],
+  },
+  {
+    label: 'GROUND',
+    fullLabel: 'GROUND TRUTH',
+    icon: MapPinned,
+    layers: [
+      { key: 'uap', label: 'UAP / NUFORC', dataKey: '', description: 'City-level reports' },
+      { key: 'wrecks', label: 'NOAA Wrecks', dataKey: '' },
+      { key: 'abandoned', label: 'Abandoned Rail / Industrial', dataKey: '' },
+      { key: 'nightlife', label: 'Nightlife + Plazas', dataKey: '' },
+      { key: 'gtfs', label: 'Transit Vehicles', dataKey: '', description: 'GTFS realtime' },
+      { key: 'gauges', label: 'USGS Water Gauges', dataKey: '' },
+      { key: 'civic_311', label: '311 Requests', dataKey: '', description: 'US cities in view' },
+      { key: 'vacant', label: 'Vacant Property', dataKey: '', description: 'US cities in view' },
+      { key: 'historic_maps', label: 'Historic Map Index', dataKey: '', description: 'LOC footprints · no tiles' },
     ],
   },
   {

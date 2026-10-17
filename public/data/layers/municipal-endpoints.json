@@ -1,0 +1,126 @@
+[
+  {
+    "id": "nyc",
+    "name": "New York City",
+    "bbox": [-74.3, 40.4, -73.6, 41.0],
+    "threeOneOne": {
+      "type": "socrata",
+      "url": "https://data.cityofnewyork.us/resource/erm2-nwe9.json",
+      "latField": "latitude",
+      "lngField": "longitude",
+      "idField": "unique_key",
+      "nameField": "complaint_type",
+      "statusField": "status",
+      "openedField": "created_date",
+      "addressField": "incident_address",
+      "limit": 1000
+    }
+  },
+  {
+    "id": "chicago",
+    "name": "Chicago",
+    "bbox": [-87.95, 41.64, -87.5, 42.03],
+    "threeOneOne": {
+      "type": "socrata",
+      "url": "https://data.cityofchicago.org/resource/v6vf-nfxy.json",
+      "latField": "latitude",
+      "lngField": "longitude",
+      "idField": "sr_number",
+      "nameField": "sr_type",
+      "statusField": "status",
+      "openedField": "created_date",
+      "addressField": "street_address",
+      "limit": 1000
+    },
+    "vacant": {
+      "type": "socrata",
+      "url": "https://data.cityofchicago.org/resource/yama-9had.json",
+      "latField": "latitude",
+      "lngField": "longitude",
+      "idField": "service_request_number",
+      "nameField": "service_request_type",
+      "statusField": "is_the_building_currently_vacant_or_occupied_",
+      "openedField": "date_service_request_was_received",
+      "addressField": "address_street_name",
+      "limit": 1000
+    }
+  },
+  {
+    "id": "sf",
+    "name": "San Francisco",
+    "bbox": [-122.52, 37.7, -122.35, 37.84],
+    "threeOneOne": {
+      "type": "socrata",
+      "url": "https://data.sfgov.org/resource/vw6y-z8j6.json",
+      "latField": "lat",
+      "lngField": "long",
+      "idField": "service_request_id",
+      "nameField": "service_name",
+      "statusField": "status_description",
+      "openedField": "requested_datetime",
+      "addressField": "address",
+      "limit": 1000
+    }
+  },
+  {
+    "id": "philadelphia",
+    "name": "Philadelphia",
+    "bbox": [-75.28, 39.86, -74.95, 40.15],
+    "threeOneOne": {
+      "type": "arcgis",
+      "url": "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/public_cases_fc/FeatureServer/0/query",
+      "latField": "y",
+      "lngField": "x",
+      "idField": "service_request_id",
+      "nameField": "service_name",
+      "statusField": "status",
+      "openedField": "requested_datetime",
+      "addressField": "address",
+      "limit": 1000
+    },
+    "vacant": {
+      "type": "arcgis",
+      "url": "https://services.arcgis.com/fLeGjb7u4uXqeF9q/arcgis/rest/services/Vacant_Indicators_Points/FeatureServer/0/query",
+      "latField": "y",
+      "lngField": "x",
+      "idField": "objectid",
+      "nameField": "address",
+      "addressField": "address",
+      "limit": 1000
+    }
+  },
+  {
+    "id": "austin",
+    "name": "Austin",
+    "bbox": [-97.95, 30.1, -97.55, 30.55],
+    "threeOneOne": {
+      "type": "socrata",
+      "url": "https://data.austintexas.gov/resource/xwdj-i9he.json",
+      "latField": "sr_location_lat",
+      "lngField": "sr_location_long",
+      "idField": "sr_number",
+      "nameField": "sr_type_desc",
+      "statusField": "sr_status_desc",
+      "openedField": "sr_created_date",
+      "addressField": "sr_location",
+      "limit": 1000
+    }
+  },
+  {
+    "id": "la",
+    "name": "Los Angeles",
+    "bbox": [-118.67, 33.7, -118.15, 34.34],
+    "threeOneOne": {
+      "type": "socrata",
+      "url": "https://data.lacity.org/resource/rq3b-xjk8.json",
+      "latField": "latitude",
+      "lngField": "longitude",
+      "idField": "srnumber",
+      "nameField": "requesttype",
+      "statusField": "status",
+      "openedField": "createddate",
+      "addressField": "address",
+      "limit": 1000
+    }
+  }
+]

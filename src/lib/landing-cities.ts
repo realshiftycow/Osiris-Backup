@@ -1,10 +1,8 @@
 /**
- * OSIRIS — where the camera lands on load when the visitor's own city is
- * unknown: no public address to locate (reached over a VPN, a tailnet or a
- * private network), or no geolocation provider answered.
+ * OSIRIS — where the camera lands on load.
  *
- * Instead of stopping on the globe, the fly-in picks one of these. Every one
- * has dense live-camera coverage, so the landing shows the platform at work.
+ * Startup always opens on STARTUP_CITY. LANDING_CITIES remains the fallback
+ * pool for any caller that still wants a random well-covered city.
  */
 
 export interface LandingCity {
@@ -12,6 +10,16 @@ export interface LandingCity {
   lat: number;
   lng: number;
 }
+
+/** Fixed first view after the splash — North Attleboro, MA. */
+export const STARTUP_CITY: LandingCity = {
+  name: 'North Attleboro',
+  lat: 41.9834,
+  lng: -71.3328,
+};
+
+/** Town-scale zoom so RIDOT / MassDOT cams around the corridor are visible. */
+export const STARTUP_ZOOM = 11.5;
 
 export const LANDING_CITIES: readonly LandingCity[] = [
   { name: 'London', lat: 51.5074, lng: -0.1278 },

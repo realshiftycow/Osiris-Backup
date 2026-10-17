@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { LANDING_CITIES, randomLandingCity } from './landing-cities';
+import { LANDING_CITIES, STARTUP_CITY, STARTUP_ZOOM, randomLandingCity } from './landing-cities';
+
+describe('STARTUP_CITY', () => {
+  it('is North Attleboro at a town-scale zoom', () => {
+    expect(STARTUP_CITY.name).toBe('North Attleboro');
+    expect(STARTUP_CITY.lat).toBeCloseTo(41.9834, 3);
+    expect(STARTUP_CITY.lng).toBeCloseTo(-71.3328, 3);
+    expect(STARTUP_ZOOM).toBeGreaterThanOrEqual(10);
+    expect(STARTUP_ZOOM).toBeLessThanOrEqual(14);
+  });
+});
 
 describe('LANDING_CITIES', () => {
   it('holds real, distinct coordinates', () => {

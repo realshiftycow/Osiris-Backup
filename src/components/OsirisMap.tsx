@@ -25,6 +25,41 @@ import LiveNewsPreviews, { type PreviewFeed } from '@/components/LiveNewsPreview
 import { attachTerrain, type TerrainStatus } from '@/lib/map-terrain';
 
 import { applyMapProjection } from '@/lib/map-projection';
+import { downloadFile } from '@/lib/aoi-export';
+import {
+  getCuriosityNote,
+  loadCuriosityNotes,
+  loadCuriosityNotesWithSeed,
+  notesToExportGeoJSON,
+  notesToGeoJSON,
+  saveCuriosityNotes,
+  upsertCuriosityNote,
+  type CuriosityNote,
+} from '@/lib/curiosity-notes';
+import {
+  GROUND_LAYER_KEYS,
+  GROUND_MIN_ZOOM,
+  GROUND_DEBOUNCE_MS,
+  boundsToBboxParam,
+  buildGroundLayerUrl,
+  type GroundLayerKey,
+} from '@/lib/ground-layers-client';
+
+/** Dense point layers that use MapLibre clustering. */
+const GROUND_CLUSTER_KEYS = new Set<GroundLayerKey>(['uap', 'nightlife', 'civic_311']);
+
+/** Distinct cyan / amber / slate hues (theme tokens; no purple glow). */
+const GROUND_COLORS: Record<GroundLayerKey, string> = {
+  uap: '#00E5FF',
+  wrecks: '#78909C',
+  abandoned: '#FFB300',
+  nightlife: '#26C6DA',
+  gtfs: '#FF9500',
+  gauges: '#4DD0E1',
+  civic_311: '#90A4AE',
+  vacant: '#FFC107',
+  historic_maps: '#607D8B',
+};
 
 /** The catalogue fields the satellite layer and its popup actually read. */
 interface SatelliteRow {
@@ -213,6 +248,11 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   const prevDrawnPolygonsRef = useRef<string[]>([]);
   const prevArcgisLayersRef = useRef<string[]>([]);
   const satLayerRef = useRef<ReturnType<typeof createSatelliteLayer> | null>(null);
+  /** Curiosities atlas FC, kept so toggling the layer does not re-download ~196k points. */
+  const curiositiesFcRef = useRef<GeoJSON.FeatureCollection | null>(null);
+  const curiositiesLoadRef = useRef<'idle' | 'loading' | 'ready'>('idle');
+  /** Investigator labels/notes for curiosity pins (localStorage-backed). */
+  const curiosityNotesRef = useRef<Record<string, CuriosityNote>>({});
   const cloudLayerRef = useRef<ReturnType<typeof createCloudLayer> | null>(null);
   const onOiGlobeRef = useRef(onOiGlobe);
   const onOiSelectRef = useRef(onOiSelect);
@@ -339,16 +379,16 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
     
-    // Select basemap style
-    const styleUrl = 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json';
+    // Local style snapshot — avoids a cold proxy round-trip to basemaps.cartocdn.com
+    // (that fetch was timing out and leaving the globe blank). Tile/sprite/glyph URLs
+    // inside the style still go through transformRequest → /api/proxy-tiles.
+    const styleUrl = '/dark-matter-style.json';
 
     const container = containerRef.current;
     maplibregl.setWorkerUrl(`/vendor/maplibre/${maplibregl.getVersion()}/maplibre-gl-worker.mjs`);
-    /* Open on the whole globe, turned to the viewer's side of it. The UTC
-       offset is a free, instant stand-in for longitude (15° an hour), so the
-       fly-in to their city after the splash is a dive, not a spin round the
-       planet. This used to open on Bulgaria at zoom 6.5 for everyone. */
-    const facingLng = Math.max(-180, Math.min(180, -new Date().getTimezoneOffset() / 4));
+    /* Open on the whole globe, already facing North Attleboro's longitude so
+       the post-splash fly-in is a dive, not a spin round the planet. */
+    const facingLng = -71.3328;
     const baseOptions = {
       container,
       style: styleUrl,
@@ -442,6 +482,37 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
 
       const sources = ['flights','military','jets','private-fl','satellites','earthquakes','gdelt','day-night','cctv','fires','weather','infrastructure','maritime','maritime-choke','maritime-ships','live-news','conflict-zones', 'war-alerts-targets', 'war-alerts-lines', 'balloons', 'radiation', 'ip-sweep-devices', 'ip-sweep-pulse', 'ip-sweep-connections', 'scan-targets', 'sdk-entities', 'sdk-links', 'malware-nodes', 'malware-new', 'network-mesh', 'cyber-heads', 'gdelt-events', 'cf-outages', 'cf-attacks', 'alert-pins'];
       sources.forEach(s => map.addSource(s, { type: 'geojson', data: EMPTY_FC }));
+      /* Curiosities atlas — ~196k Drive-KML points; clustered for GPU sanity. */
+      map.addSource('curiosities', {
+        type: 'geojson',
+        data: EMPTY_FC,
+        cluster: true,
+        clusterMaxZoom: 12,
+        clusterRadius: 42,
+      });
+      /* Investigator-annotated pins only (labels + notes overlay). */
+      map.addSource('curiosities-notes', { type: 'geojson', data: EMPTY_FC });
+      curiosityNotesRef.current = loadCuriosityNotes();
+      void loadCuriosityNotesWithSeed().then((merged) => {
+        curiosityNotesRef.current = merged;
+        const notesSrc = map.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+        notesSrc?.setData(notesToGeoJSON(merged) as never);
+      });
+
+      /* GROUND layers — viewport-fetched GeoJSON; cluster dense point sets. */
+      for (const key of GROUND_LAYER_KEYS) {
+        if (GROUND_CLUSTER_KEYS.has(key)) {
+          map.addSource(`ground-${key}`, {
+            type: 'geojson',
+            data: EMPTY_FC,
+            cluster: true,
+            clusterMaxZoom: 12,
+            clusterRadius: 42,
+          });
+        } else {
+          map.addSource(`ground-${key}`, { type: 'geojson', data: EMPTY_FC });
+        }
+      }
 
       // ── FLIGHT ROUTE VISUALIZATION SOURCES & LAYERS ──
 
@@ -839,6 +910,211 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
       });
 
       // Route layers are added later (after setMapReady) so they render on top of everything.
+
+      // Curiosities atlas (haunted / weird / treasure / abandoned / furries)
+      map.addLayer({
+        id: 'curiosities-clusters',
+        type: 'circle',
+        source: 'curiosities',
+        filter: ['has', 'point_count'],
+        paint: {
+          'circle-color': [
+            'step', ['get', 'point_count'],
+            '#9C6BFF', 25, '#7E57C2', 100, '#5E35B1', 500, '#4527A0',
+          ],
+          'circle-radius': [
+            'step', ['get', 'point_count'],
+            12, 25, 16, 100, 22, 500, 28,
+          ],
+          'circle-opacity': 0.72,
+          'circle-stroke-width': 1.5,
+          'circle-stroke-color': 'rgba(255,255,255,0.35)',
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-cluster-count',
+        type: 'symbol',
+        source: 'curiosities',
+        filter: ['has', 'point_count'],
+        layout: {
+          'text-field': ['get', 'point_count_abbreviated'],
+          'text-font': ['Open Sans Bold'],
+          'text-size': 11,
+          'text-allow-overlap': true,
+        },
+        paint: { 'text-color': '#F5F0FF', 'text-halo-color': '#1a1028', 'text-halo-width': 1 },
+      });
+      map.addLayer({
+        id: 'curiosities-dots',
+        type: 'circle',
+        source: 'curiosities',
+        filter: ['!', ['has', 'point_count']],
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2, 8, 3.5, 14, 6],
+          'circle-color': '#B388FF',
+          'circle-opacity': 0.85,
+          'circle-stroke-width': 0.8,
+          'circle-stroke-color': 'rgba(255,255,255,0.4)',
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-notes-glow',
+        type: 'circle',
+        source: 'curiosities-notes',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 10, 10, 16, 14, 22],
+          'circle-color': '#E0B0FF',
+          'circle-opacity': 0.22,
+          'circle-blur': 0.6,
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-notes-dots',
+        type: 'circle',
+        source: 'curiosities-notes',
+        paint: {
+          'circle-radius': ['interpolate', ['linear'], ['zoom'], 4, 5, 10, 7, 14, 9],
+          'circle-color': '#F3E5FF',
+          'circle-opacity': 0.95,
+          'circle-stroke-width': 2,
+          'circle-stroke-color': '#B388FF',
+        },
+      });
+      map.addLayer({
+        id: 'curiosities-notes-label',
+        type: 'symbol',
+        source: 'curiosities-notes',
+        minzoom: 8,
+        layout: {
+          'text-field': ['get', 'label'],
+          'text-font': ['Open Sans Bold'],
+          'text-size': 11,
+          'text-offset': [0, 1.35],
+          'text-anchor': 'top',
+          'text-max-width': 14,
+          'text-allow-overlap': false,
+        },
+        paint: {
+          'text-color': '#F3E5FF',
+          'text-halo-color': '#1a1028',
+          'text-halo-width': 1.4,
+        },
+      });
+
+      // GROUND layers — circles / rail lines / historic footprint fill+stroke
+      for (const key of GROUND_LAYER_KEYS) {
+        const color = GROUND_COLORS[key];
+        const src = `ground-${key}`;
+        if (key === 'historic_maps') {
+          map.addLayer({
+            id: 'ground-historic_maps-fill',
+            type: 'fill',
+            source: src,
+            paint: {
+              'fill-color': color,
+              'fill-opacity': 0.22,
+            },
+          });
+          map.addLayer({
+            id: 'ground-historic_maps-line',
+            type: 'line',
+            source: src,
+            paint: {
+              'line-color': '#00E5FF',
+              'line-width': 1.5,
+              'line-opacity': 0.85,
+            },
+          });
+          continue;
+        }
+        if (key === 'abandoned') {
+          map.addLayer({
+            id: 'ground-abandoned-line',
+            type: 'line',
+            source: src,
+            filter: ['==', ['geometry-type'], 'LineString'],
+            paint: {
+              'line-color': color,
+              'line-width': 2.5,
+              'line-opacity': 0.85,
+            },
+          });
+          map.addLayer({
+            id: 'ground-abandoned-dots',
+            type: 'circle',
+            source: src,
+            filter: ['==', ['geometry-type'], 'Point'],
+            paint: {
+              'circle-radius': ['interpolate', ['linear'], ['zoom'], 8, 3, 14, 6],
+              'circle-color': color,
+              'circle-opacity': 0.9,
+              'circle-stroke-width': 0.8,
+              'circle-stroke-color': 'rgba(255,255,255,0.35)',
+            },
+          });
+          continue;
+        }
+        if (GROUND_CLUSTER_KEYS.has(key)) {
+          map.addLayer({
+            id: `ground-${key}-clusters`,
+            type: 'circle',
+            source: src,
+            filter: ['has', 'point_count'],
+            paint: {
+              'circle-color': [
+                'step', ['get', 'point_count'],
+                color, 25, color, 100, color,
+              ],
+              'circle-radius': [
+                'step', ['get', 'point_count'],
+                12, 25, 16, 100, 22,
+              ],
+              'circle-opacity': 0.7,
+              'circle-stroke-width': 1.5,
+              'circle-stroke-color': 'rgba(255,255,255,0.35)',
+            },
+          });
+          map.addLayer({
+            id: `ground-${key}-cluster-count`,
+            type: 'symbol',
+            source: src,
+            filter: ['has', 'point_count'],
+            layout: {
+              'text-field': ['get', 'point_count_abbreviated'],
+              'text-font': ['Open Sans Bold'],
+              'text-size': 11,
+              'text-allow-overlap': true,
+            },
+            paint: { 'text-color': '#F5F5F5', 'text-halo-color': '#0c0e1a', 'text-halo-width': 1 },
+          });
+          map.addLayer({
+            id: `ground-${key}-dots`,
+            type: 'circle',
+            source: src,
+            filter: ['!', ['has', 'point_count']],
+            paint: {
+              'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2.5, 10, 4.5, 14, 7],
+              'circle-color': color,
+              'circle-opacity': 0.88,
+              'circle-stroke-width': 0.8,
+              'circle-stroke-color': 'rgba(255,255,255,0.4)',
+            },
+          });
+          continue;
+        }
+        map.addLayer({
+          id: `ground-${key}-dots`,
+          type: 'circle',
+          source: src,
+          paint: {
+            'circle-radius': ['interpolate', ['linear'], ['zoom'], 3, 2.5, 10, 4.5, 14, 7],
+            'circle-color': color,
+            'circle-opacity': 0.88,
+            'circle-stroke-width': 0.8,
+            'circle-stroke-color': 'rgba(255,255,255,0.4)',
+          },
+        });
+      }
 
       // Balloons (moving entities)
       map.addLayer({ id: 'balloon-dots', type: 'circle', source: 'balloons', paint: {
@@ -1489,9 +1765,151 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     });
 
     // ── Generic hover for clickables ──
-    ['conflict-icons','cctv-dots','eq-circles','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots','sdk-sea','sdk-sea-glow','sdk-sea-atmo','sdk-air','sdk-air-glow','sdk-air-atmo','sdk-intel','sdk-intel-glow','sdk-intel-atmo','malware-dots','cyber-heads','gdelt-events-dots','cf-outage-dots','cf-attack-dots','alert-pin-dots'].forEach(layer => {
+    ['conflict-icons','cctv-dots','eq-circles','fires-heat','gdelt-dots','weather-dots','infra-dots','maritime-dots','choke-dots','news-dots','balloon-dots','rad-dots','ship-dots','sweep-device-dots','scan-targets-dots','sdk-sea','sdk-sea-glow','sdk-sea-atmo','sdk-air','sdk-air-glow','sdk-air-atmo','sdk-intel','sdk-intel-glow','sdk-intel-atmo','malware-dots','cyber-heads','gdelt-events-dots','cf-outage-dots','cf-attack-dots','alert-pin-dots','curiosities-clusters','curiosities-dots','curiosities-notes-dots','ground-uap-clusters','ground-uap-dots','ground-wrecks-dots','ground-abandoned-line','ground-abandoned-dots','ground-nightlife-clusters','ground-nightlife-dots','ground-gtfs-dots','ground-gauges-dots','ground-civic_311-clusters','ground-civic_311-dots','ground-vacant-dots','ground-historic_maps-fill','ground-historic_maps-line'].forEach(layer => {
       map.on('mouseenter', layer, () => { map.getCanvas().style.cursor = 'pointer'; });
       map.on('mouseleave', layer, () => { map.getCanvas().style.cursor = ''; });
+    });
+
+    const syncCuriosityNotesOverlay = () => {
+      const notesSrc = map.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+      notesSrc?.setData(notesToGeoJSON(curiosityNotesRef.current) as never);
+    };
+    syncCuriosityNotesOverlay();
+
+    const openCuriosityEditor = (pinIndex: number, lng: number, lat: number) => {
+      const existing = getCuriosityNote(curiosityNotesRef.current, pinIndex);
+      const labelVal = htmlEsc(existing?.label ?? '');
+      const notesVal = htmlEsc(existing?.notes ?? '');
+      const formId = `curio-note-${pinIndex}-${Date.now()}`;
+      popup([lng, lat], `<div style="${pStyle}border:1px solid rgba(179,136,255,0.45);min-width:280px;">
+        <div style="color:#B388FF;font-size:11px;font-weight:700;letter-spacing:0.14em;margin-bottom:6px;">CURIOSITY PIN</div>
+        <div style="font-size:9px;color:#E8E6E0;margin-bottom:10px;">${lat.toFixed(5)}°, ${lng.toFixed(5)}° · #${pinIndex}</div>
+        <label style="display:block;font-size:8px;color:#8A8880;letter-spacing:0.12em;margin-bottom:4px;">LABEL</label>
+        <input id="${formId}-label" type="text" maxlength="80" value="${labelVal}" placeholder="Short name on the map"
+          style="width:100%;box-sizing:border-box;margin-bottom:8px;padding:7px 8px;border-radius:6px;border:1px solid rgba(179,136,255,0.35);background:rgba(0,0,0,0.35);color:#F3E5FF;font:11px 'JetBrains Mono',monospace;" />
+        <label style="display:block;font-size:8px;color:#8A8880;letter-spacing:0.12em;margin-bottom:4px;">NOTES</label>
+        <textarea id="${formId}-notes" rows="4" maxlength="4000" placeholder="What you found, when, links…"
+          style="width:100%;box-sizing:border-box;margin-bottom:10px;padding:7px 8px;border-radius:6px;border:1px solid rgba(179,136,255,0.35);background:rgba(0,0,0,0.35);color:#E8E6E0;font:11px 'JetBrains Mono',monospace;resize:vertical;">${notesVal}</textarea>
+        <div style="display:flex;gap:6px;flex-wrap:wrap;">
+          <button type="button" id="${formId}-save" style="${linkStyle}flex:1;cursor:pointer;color:#12081c;border:1px solid #B388FF;background:#B388FF;margin-top:0;">SAVE</button>
+          <button type="button" id="${formId}-clear" style="${linkStyle}cursor:pointer;color:#B388FF;border:1px solid rgba(179,136,255,0.4);background:transparent;margin-top:0;">CLEAR</button>
+          <button type="button" id="${formId}-export" style="${linkStyle}cursor:pointer;color:#8A8880;border:1px solid rgba(255,255,255,0.15);background:transparent;margin-top:0;" title="Download all notes as GeoJSON">EXPORT ALL</button>
+        </div>
+        <div id="${formId}-status" style="margin-top:8px;font-size:8px;color:#5C5A54;letter-spacing:0.08em;"></div>
+        <a href="https://drive.google.com/file/d/1ji3tp5Mi-0JG85jfIaV966xpkU8PLhcg/view" target="_blank" rel="noopener noreferrer" style="${linkStyle}display:inline-block;width:100%;text-align:center;color:#B388FF;border:1px solid rgba(179,136,255,0.4);background:rgba(179,136,255,0.12);box-sizing:border-box;">[ SOURCE KML ↗ ]</a>
+      </div>`);
+      const root = popupRef.current?.getElement();
+      if (!root) return;
+      const status = root.querySelector(`#${formId}-status`) as HTMLElement | null;
+      const labelEl = root.querySelector(`#${formId}-label`) as HTMLInputElement | null;
+      const notesEl = root.querySelector(`#${formId}-notes`) as HTMLTextAreaElement | null;
+      root.querySelector(`#${formId}-save`)?.addEventListener('click', () => {
+        curiosityNotesRef.current = upsertCuriosityNote(curiosityNotesRef.current, {
+          i: pinIndex,
+          lat,
+          lng,
+          label: labelEl?.value ?? '',
+          notes: notesEl?.value ?? '',
+        });
+        saveCuriosityNotes(curiosityNotesRef.current);
+        syncCuriosityNotesOverlay();
+        if (status) status.textContent = 'SAVED LOCALLY';
+      });
+      root.querySelector(`#${formId}-clear`)?.addEventListener('click', () => {
+        if (labelEl) labelEl.value = '';
+        if (notesEl) notesEl.value = '';
+        curiosityNotesRef.current = upsertCuriosityNote(curiosityNotesRef.current, {
+          i: pinIndex, lat, lng, label: '', notes: '',
+        });
+        saveCuriosityNotes(curiosityNotesRef.current);
+        syncCuriosityNotesOverlay();
+        if (status) status.textContent = 'CLEARED';
+      });
+      root.querySelector(`#${formId}-export`)?.addEventListener('click', () => {
+        const fc = notesToExportGeoJSON(curiosityNotesRef.current);
+        downloadFile(
+          `osiris-curiosity-notes-${new Date().toISOString().slice(0, 10)}.geojson`,
+          JSON.stringify(fc, null, 2),
+          'application/geo+json',
+        );
+        if (status) status.textContent = `EXPORTED ${fc.features.length} NOTES`;
+      });
+    };
+
+    // ── Curiosities atlas ──
+    map.on('click', 'curiosities-clusters', (e: any) => {
+      const feature = e.features?.[0];
+      if (!feature) return;
+      const clusterId = feature.properties?.cluster_id;
+      const src = map.getSource('curiosities') as maplibregl.GeoJSONSource;
+      src.getClusterExpansionZoom(clusterId).then((zoom) => {
+        map.easeTo({ center: feature.geometry.coordinates, zoom });
+      }).catch(() => { /* source not ready */ });
+    });
+    map.on('click', 'curiosities-dots', (e: any) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const coords = (f.geometry as GeoJSON.Point).coordinates;
+      const pinIndex = Number(f.properties?.i);
+      if (!Number.isFinite(pinIndex)) return;
+      openCuriosityEditor(pinIndex, coords[0], coords[1]);
+    });
+    map.on('click', 'curiosities-notes-dots', (e: any) => {
+      const f = e.features?.[0];
+      if (!f) return;
+      const coords = (f.geometry as GeoJSON.Point).coordinates;
+      const pinIndex = Number(f.properties?.i);
+      if (!Number.isFinite(pinIndex)) return;
+      openCuriosityEditor(pinIndex, coords[0], coords[1]);
+    });
+
+    // ── GROUND layers ──
+    const groundPopupLayers = [
+      'ground-uap-dots', 'ground-wrecks-dots', 'ground-abandoned-line', 'ground-abandoned-dots',
+      'ground-nightlife-dots', 'ground-gtfs-dots', 'ground-gauges-dots', 'ground-civic_311-dots',
+      'ground-vacant-dots', 'ground-historic_maps-fill', 'ground-historic_maps-line',
+    ];
+    for (const clusterLayer of ['ground-uap-clusters', 'ground-nightlife-clusters', 'ground-civic_311-clusters'] as const) {
+      map.on('click', clusterLayer, (e: any) => {
+        const feature = e.features?.[0];
+        if (!feature) return;
+        const clusterId = feature.properties?.cluster_id;
+        const sourceId = clusterLayer.replace(/-clusters$/, '');
+        const src = map.getSource(sourceId) as maplibregl.GeoJSONSource;
+        src.getClusterExpansionZoom(clusterId).then((zoom) => {
+          map.easeTo({ center: feature.geometry.coordinates, zoom });
+        }).catch(() => { /* source not ready */ });
+      });
+    }
+    groundPopupLayers.forEach((layerId) => {
+      map.on('click', layerId, (e: any) => {
+        const f = e.features?.[0];
+        if (!f) return;
+        const p = f.properties || {};
+        const g = f.geometry as GeoJSON.Geometry;
+        const coords =
+          g?.type === 'Point'
+            ? (g as GeoJSON.Point).coordinates.slice()
+            : [e.lngLat.lng, e.lngLat.lat];
+        const keyFromLayer = layerId
+          .replace(/^ground-/, '')
+          .replace(/-(dots|line|fill)$/, '') as GroundLayerKey;
+        const color = GROUND_COLORS[keyFromLayer] || '#00E5FF';
+        const title = p.name || p.title || p.siteName || p.label || p.city || 'Untitled';
+        const kind = p.kind || `ground_${keyFromLayer}`;
+        const attribution = p.attribution || '';
+        const isUap = kind === 'ground_uap' || keyFromLayer === 'uap';
+        const locUrl = urlSafe(p.locUrl);
+        const hasLoc = locUrl !== '#' && !!p.locUrl;
+        popup(coords, `<div style="${pStyle}border:1px solid ${color}4d;min-width:220px;">
+          <div style="color:${color};font-size:11px;font-weight:700;letter-spacing:0.12em;margin-bottom:6px;">${htmlEsc(String(kind).replace(/^ground_/, '').toUpperCase())}</div>
+          <div style="color:#E8E6E0;font-size:12px;font-weight:700;margin-bottom:8px;">${htmlEsc(title)}</div>
+          <div style="font-size:9px;color:#8A8880;margin-bottom:6px;">KIND · ${htmlEsc(kind)}</div>
+          ${isUap ? '<div style="font-size:9px;color:#FFB300;margin-bottom:8px;line-height:1.4;">Approximate location (city-level).</div>' : ''}
+          ${hasLoc ? `<a href="${locUrl}" target="_blank" rel="noopener noreferrer" style="${linkStyle}color:#00E5FF;border:1px solid rgba(0,229,255,0.4);background:rgba(0,229,255,0.1);display:inline-block;width:100%;text-align:center;box-sizing:border-box;">[ LIBRARY OF CONGRESS ↗ ]</a>` : ''}
+          ${attribution ? `<div style="font-size:7px;color:#5C5A54;text-align:center;letter-spacing:0.08em;margin-top:10px;">SOURCE: ${htmlEsc(attribution)}</div>` : ''}
+        </div>`);
+      });
     });
 
     // ── Scan Targets click ──
@@ -2224,6 +2642,134 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
     setGeo('balloons', activeLayers.balloons && data.balloons ? data.balloons.map((b: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [b.lng, b.lat] }, properties: { callsign: b.callsign, type: b.type, status: b.status, altitude: b.altitude, speed: b.speed, verticalRate: b.verticalRate, temperature: b.temperature, color: b.color } })) : []);
   }, [mapReady, data.balloons, activeLayers.balloons, setGeo]);
 
+  /* Curiosities atlas — float32 [lng,lat,…] bin (~1.5MB), expanded once client-side. */
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const src = map.getSource('curiosities') as maplibregl.GeoJSONSource | undefined;
+    if (!src) return;
+    const on = !!(activeLayers as { curiosities?: boolean }).curiosities;
+    if (!on) {
+      src.setData(EMPTY_FC as never);
+      return;
+    }
+    const notesSrc = map.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+    notesSrc?.setData(notesToGeoJSON(curiosityNotesRef.current) as never);
+
+    if (curiositiesFcRef.current) {
+      src.setData(curiositiesFcRef.current as never);
+      return;
+    }
+    if (curiositiesLoadRef.current === 'loading') return;
+    curiositiesLoadRef.current = 'loading';
+    fetch('/data/curiosities.bin')
+      .then((r) => {
+        if (!r.ok) throw new Error(`curiosities bin HTTP ${r.status}`);
+        return r.arrayBuffer();
+      })
+      .then((ab) => {
+        const view = new DataView(ab);
+        const count = Math.floor(ab.byteLength / 8);
+        const features: GeoJSON.Feature[] = new Array(count);
+        for (let i = 0; i < count; i++) {
+          const lng = view.getFloat32(i * 8, true);
+          const lat = view.getFloat32(i * 8 + 4, true);
+          features[i] = {
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: [lng, lat] },
+            properties: { i },
+          };
+        }
+        const fc: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features };
+        curiositiesFcRef.current = fc;
+        curiositiesLoadRef.current = 'ready';
+        if (!(activeLayers as { curiosities?: boolean }).curiosities) return;
+        const live = mapRef.current?.getSource('curiosities') as maplibregl.GeoJSONSource | undefined;
+        live?.setData(fc as never);
+        const notesLive = mapRef.current?.getSource('curiosities-notes') as maplibregl.GeoJSONSource | undefined;
+        notesLive?.setData(notesToGeoJSON(curiosityNotesRef.current) as never);
+      })
+      .catch((err) => {
+        curiositiesLoadRef.current = 'idle';
+        console.warn('[OSIRIS] curiosities atlas failed', err);
+      });
+  }, [mapReady, (activeLayers as { curiosities?: boolean }).curiosities]);
+
+  /* GROUND layers — debounced viewport fetch; GTFS polls every 20s while on. */
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    const aborters = new Map<string, AbortController>();
+    const layersOn = activeLayers as Record<string, boolean>;
+
+    const refreshKey = (key: GroundLayerKey) => {
+      const src = map.getSource(`ground-${key}`) as maplibregl.GeoJSONSource | undefined;
+      const on = !!layersOn[key];
+      if (!on) {
+        src?.setData(EMPTY_FC as never);
+        aborters.get(key)?.abort();
+        return;
+      }
+      const z = map.getZoom();
+      if (z < GROUND_MIN_ZOOM[key]) {
+        src?.setData(EMPTY_FC as never);
+        aborters.get(key)?.abort();
+        return;
+      }
+      aborters.get(key)?.abort();
+      const ac = new AbortController();
+      aborters.set(key, ac);
+      const bbox = boundsToBboxParam(map.getBounds());
+      const url = buildGroundLayerUrl(key, bbox, z);
+      fetch(url, { signal: ac.signal })
+        .then((r) => r.json())
+        .then((fc) => { if (!ac.signal.aborted) src?.setData(fc); })
+        .catch(() => { /* aborted or fail: keep last */ });
+    };
+
+    const refresh = () => {
+      for (const key of GROUND_LAYER_KEYS) refreshKey(key);
+    };
+
+    let t: ReturnType<typeof setTimeout> | undefined;
+    const onMove = () => {
+      clearTimeout(t);
+      t = setTimeout(refresh, GROUND_DEBOUNCE_MS);
+    };
+    map.on('moveend', onMove);
+    refresh();
+
+    const gtfsTimer = setInterval(() => {
+      if (document.hidden) return;
+      if (layersOn.gtfs) refreshKey('gtfs');
+    }, 20_000);
+
+    const onVis = () => {
+      if (document.hidden) return;
+      if (layersOn.gtfs) refreshKey('gtfs');
+    };
+    document.addEventListener('visibilitychange', onVis);
+
+    return () => {
+      map.off('moveend', onMove);
+      clearTimeout(t);
+      clearInterval(gtfsTimer);
+      document.removeEventListener('visibilitychange', onVis);
+      aborters.forEach((a) => a.abort());
+    };
+  }, [
+    mapReady,
+    activeLayers.uap,
+    activeLayers.wrecks,
+    activeLayers.abandoned,
+    activeLayers.nightlife,
+    activeLayers.gtfs,
+    activeLayers.gauges,
+    activeLayers.civic_311,
+    activeLayers.vacant,
+    activeLayers.historic_maps,
+  ]);
+
   useEffect(() => {
     if (!mapReady) return;
     setGeo('radiation', activeLayers.radiation && data.radiation ? data.radiation.map((r: any) => ({ type: 'Feature', geometry: { type: 'Point', coordinates: [r.lng, r.lat] }, properties: { name: r.name, city: r.city, country: r.country, reading: r.reading, status: r.status, network: r.network } })) : []);
@@ -2442,6 +2988,17 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
 
     setVis(['balloon-dots','balloon-label'], activeLayers.balloons);
     setVis(['rad-glow','rad-dots','rad-label'], activeLayers.radiation);
+    setVis(
+      [
+        'curiosities-clusters',
+        'curiosities-cluster-count',
+        'curiosities-dots',
+        'curiosities-notes-glow',
+        'curiosities-notes-dots',
+        'curiosities-notes-label',
+      ],
+      !!(activeLayers as { curiosities?: boolean }).curiosities,
+    );
     setVis(['sdk-sea','sdk-sea-glow','sdk-sea-atmo'], activeLayers.sdk_sea !== false);
     setVis(['sdk-air','sdk-air-glow','sdk-air-atmo'], activeLayers.sdk_air !== false);
     setVis(['sdk-intel','sdk-intel-glow','sdk-intel-atmo'], activeLayers.sdk_naval !== false);

@@ -38,7 +38,7 @@ const DrawHud = dynamic(() => import('@/components/DrawHud'), { ssr: false });
 // not the toolbar has loaded yet.
 import { toShape, queryRing, type DrawMode, type DrawnShape, type DrawProgress, type DrawResult } from '@/lib/draw';
 import { selectInPolygon } from '@/lib/aoi';
-import { pickLandingCity } from '@/lib/landing-cities';
+import { STARTUP_CITY, STARTUP_ZOOM } from '@/lib/landing-cities';
 import { diffSweep, appendEvents, type WatchBaseline, type WatchEvent } from '@/lib/watch';
 import { STORAGE_KEY, serializeShapes, deserializeShapes, shapesToGeoJSON, downloadFile } from '@/lib/aoi-export';
 const TokenPanel = dynamic(() => import('@/components/TokenPanel'));
@@ -510,6 +510,19 @@ export default function Dashboard() {
     gdelt_events: false,
     cf_outages: false,
     cf_attacks: false,
+    /* Drive KML atlas: haunted / weird / treasure / abandoned / furries (~196k pins).
+       Off until asked for — expanding the bin on first toggle is a one-shot cost. */
+    curiosities: false,
+    /* Ground-truth layers — off until asked for (Task 10). */
+    uap: false,
+    wrecks: false,
+    abandoned: false,
+    nightlife: false,
+    gtfs: false,
+    gauges: false,
+    civic_311: false,
+    vacant: false,
+    historic_maps: false,
   });
   // ── OI ASSIST ── the conversation, and the page it works: the camera, the
   // layers, the panels, the live data, and what it marks on the map. It lives
@@ -670,7 +683,7 @@ export default function Dashboard() {
      nearly at street level, and the globe was never seen. */
   useEffect(() => {
     if (!splashGone || !homeLocation || autoLocateCancelled.current) return;
-    setFlyToLocation({ ...homeLocation, zoom: 8, duration: 3500, ts: Date.now() });
+    setFlyToLocation({ ...homeLocation, zoom: STARTUP_ZOOM, duration: 3500, ts: Date.now() });
   }, [splashGone, homeLocation]);
 
   // On mount: restore layers, probe optional feeds, and geolocate by IP
@@ -700,42 +713,15 @@ export default function Dashboard() {
       .then(p => { if (p) setCapabilities(c => ({ ...c, cloudflare: !!p.configured })); })
       .catch(() => { /* leave the layer hidden */ });
 
-    // Once the user interacts, a late IP-location response must not steal the
-    // camera back. The request is also cancelled when this page unmounts.
-    const geoController = new AbortController();
+    /* Always open on North Attleboro after the splash — densify target for
+       the Providence–Attleboro corridor cams. Operator pan/key cancels the
+       fly-in if they take the camera first. */
     const cancelAutoLocate = () => { autoLocateCancelled.current = true; };
     window.addEventListener('pointerdown', cancelAutoLocate, { once: true });
     window.addEventListener('keydown', cancelAutoLocate, { once: true });
-    /* Asked for at once rather than after a fixed 3 s wait, so the answer is
-       in hand when the splash lifts; the effect above does the flying. When
-       the visitor's city can't be found (no public address, every provider
-       failed, or no answer within 6 s) the fly-in still happens, to a random
-       well-covered city, rather than stopping on the globe. */
-    let located = false;
-    const landSomewhere = () => {
-      if (located || geoController.signal.aborted) return;
-      located = true;
-      const city = pickLandingCity();
-      setHomeLocation({ lat: city.lat, lng: city.lng });
-    };
-    const geoGiveUp = setTimeout(landSomewhere, 6000);
-    fetch('/api/geo', { signal: geoController.signal })
-      .then(r => r.json())
-      .then(geo => {
-        if (located || geoController.signal.aborted) return;
-        if (geo.status === 'success' &&
-            Number.isFinite(geo.lat) && Number.isFinite(geo.lon) && Math.abs(geo.lat) <= 90 && Math.abs(geo.lon) <= 180) {
-          located = true;
-          setHomeLocation({ lat: geo.lat, lng: geo.lon });
-        } else {
-          landSomewhere();
-        }
-      })
-      .catch(landSomewhere);
+    setHomeLocation({ lat: STARTUP_CITY.lat, lng: STARTUP_CITY.lng });
 
     return () => {
-      clearTimeout(geoGiveUp);
-      geoController.abort();
       window.removeEventListener('pointerdown', cancelAutoLocate);
       window.removeEventListener('keydown', cancelAutoLocate);
     };
