@@ -4,18 +4,20 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { ArrowUp, Pause, Play, SkipBack, SkipForward, Wind } from 'lucide-react';
 import type { Map as MlMap } from 'maplibre-gl';
 import type { WindField } from '@/lib/wind-field';
-import { blendWind, bracketTime, sampleWind, WIND_BANDS, WIND_STYLE, WindOverlay, type WindGrid, type WindStyle } from '@/lib/wind-layer';
-import { AtCentre, BoxShell, Choice, clock, DAYS, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
+import { blendWind, bracketTime, sampleWind, WIND_BANDS, WIND_STYLE, type WindGrid, type WindStyle } from '@/lib/wind-layer';
+import { WindOverlay } from '@/lib/wind-gl-layer';
+import { AtCentre, BoxShell, Choice, clock, DAYS, IconButton, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
 
 /**
- * OSIRIS — the Wind layer: its particles, and the small box that holds its
+ * OSIRIS — the Wind layer: its streamlines, and the small box that holds its
  * time slider and controls.
  *
  * The slider runs from three days back to five days ahead of the newest GFS
  * run (see /api/wind), a frame every three hours. Between two frames the wind
  * is blended, so scrubbing and playing move smoothly instead of in three-hour
  * jumps. Frames are fetched as the slider nears them, never the whole run.
- * TUNE sets how the particles move: their speed, tail length and density.
+ * TUNE sets how the wind is drawn: how fast the highlights run, how long
+ * their tails are, and how many streamlines there are.
  *
  * Folding the box leaves a chip with the time on it; the wind keeps blowing
  * and playing keeps playing. With the layer's Time Controls switched off
@@ -51,7 +53,7 @@ function readSettings(): Settings {
     const saved = JSON.parse(localStorage.getItem(STORE) ?? 'null');
     if (typeof saved?.speed === 'number') out.speed = saved.speed;
     if (typeof saved?.trail === 'number') out.trail = saved.trail;
-    if (typeof saved?.density === 'number') out.density = saved.density;
+    if (typeof saved?.density === 'number') out.density = Math.min(2, saved.density);
     if (RATES.includes(saved?.rate)) out.rate = saved.rate;
     if (saved?.unit in UNITS) out.unit = saved.unit;
     if (saved?.v === VERSION && typeof saved?.open === 'boolean') out.open = saved.open;
@@ -112,7 +114,7 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
     if (!controls) { setPlaying(false); setTime(now); }
   }
 
-  // The particles, on their own canvas over the map, for as long as the layer is on.
+  // The streamlines, a custom layer on the map, for as long as the layer is on.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -253,7 +255,7 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
   return (
     <BoxShell
       icon={Wind} title="Wind" source="NOAA GFS"
-      open={settings.open} playing={playing} tuning={tuning} tuneLabel="Tune the particles"
+      open={settings.open} playing={playing} tuning={tuning} tuneLabel="Tune the wind"
       onOpen={() => update({ open: true })}
       onFold={() => { setTuning(false); update({ open: false }); }}
       onTune={() => setTuning(o => !o)}
@@ -270,13 +272,8 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
             format={v => `${v.toFixed(2)}×`} onChange={speed => update({ speed })} />
           <Tune label="TAIL" value={settings.trail} min={4} max={60} step={1}
             format={v => (v < 12 ? 'SHORT' : v < 30 ? 'MEDIUM' : 'LONG')} onChange={trail => update({ trail })} />
-          <Tune label="DENSITY" value={settings.density} min={0.25} max={2.5} step={0.05}
+          <Tune label="DENSITY" value={settings.density} min={0.25} max={2} step={0.05}
             format={v => `${v.toFixed(2)}×`} onChange={density => update({ density })} />
-          <Legend title={`WIND SPEED · ${settings.unit.toUpperCase()}`} steps={WIND_BANDS.map(band => ({
-            color: `rgba(${band.rgb.join(',')},${band.alpha})`,
-            value: String(Math.round(band.from * UNITS[settings.unit])),
-            name: band.name,
-          }))} />
           <div className="flex items-center gap-2">
             <Choice label="Wind speed unit" value={settings.unit} onChange={unit => update({ unit })}
               options={(Object.keys(UNITS) as Unit[]).map(unit => ({ value: unit, label: unit.toUpperCase() }))} />
@@ -295,9 +292,9 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
         <AtCentre title={centreBand?.name}>
           {centre && centreBand ? (
             <>
-              {/* Points the way the wind is going, in its speed band's colour. */}
-              <ArrowUp aria-hidden="true" className="w-3 h-3 shrink-0" strokeWidth={2.2}
-                style={{ transform: `rotate(${centre.from + 180}deg)`, color: `rgb(${centreBand.rgb.join(',')})` }} />
+              {/* Points the way the wind is going. */}
+              <ArrowUp aria-hidden="true" className="w-3 h-3 shrink-0 text-[var(--gold-light)]" strokeWidth={2.2}
+                style={{ transform: `rotate(${centre.from + 180}deg)` }} />
               <span className="text-[var(--gold-light)]">{Math.round(centre.speed * UNITS[settings.unit])} {settings.unit.toUpperCase()}</span>
               <span className="text-white/45">FROM {POINTS[Math.round(centre.from / 22.5) % 16]}</span>
             </>
