@@ -6,18 +6,20 @@ import type { Map as MlMap } from 'maplibre-gl';
 import type { WindField } from '@/lib/wind-field';
 import { blendWind, bracketTime, sampleWind, WIND_BANDS, WIND_STYLE, type WindGrid, type WindStyle } from '@/lib/wind-layer';
 import { WindOverlay } from '@/lib/wind-gl-layer';
-import { AtCentre, BoxShell, Choice, clock, DAYS, IconButton, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
+import { WindParticles } from '@/lib/wind-particles';
+import { AtCentre, BoxShell, Choice, clock, DAYS, IconButton, Legend, ResetButton, TextButton, TimeReadout, TimeTrack, Tune } from '@/components/TimeBox';
 
 /**
- * OSIRIS — the Wind layer: its streamlines, and the small box that holds its
- * time slider and controls.
+ * OSIRIS — the Wind layer: its streamlines (or, with the layer's Particles
+ * option, its particles), and the small box that holds its time slider and
+ * controls.
  *
  * The slider runs from three days back to five days ahead of the newest GFS
  * run (see /api/wind), a frame every three hours. Between two frames the wind
  * is blended, so scrubbing and playing move smoothly instead of in three-hour
  * jumps. Frames are fetched as the slider nears them, never the whole run.
- * TUNE sets how the wind is drawn: how fast the highlights run, how long
- * their tails are, and how many streamlines there are.
+ * TUNE sets how the wind is drawn: how fast it runs, how long its tails are,
+ * and how many streamlines or particles there are.
  *
  * Folding the box leaves a chip with the time on it; the wind keeps blowing
  * and playing keeps playing. With the layer's Time Controls switched off
@@ -76,13 +78,15 @@ function relative(t: number, now: number): string {
   return `${sign}${d ? `${d}D` : ''}${d && h ? ' ' : ''}${h ? `${h}H` : ''}`;
 }
 
-export default function WindBar({ mapRef, controls = true, onOff }: {
+export default function WindBar({ mapRef, controls = true, particles = false, onOff }: {
   mapRef: React.RefObject<MlMap | null>;
   /** Show the box; off, the wind is drawn as it is now. */
   controls?: boolean;
+  /** Draw particles coloured by speed, the classic look, instead of streamlines. */
+  particles?: boolean;
   onOff?: () => void;
 }) {
-  const overlay = useRef<WindOverlay | null>(null);
+  const overlay = useRef<WindOverlay | WindParticles | null>(null);
   const frames = useRef(new Map<number, Frame>());
   const fetching = useRef(new Set<number>());
   const failed = useRef(new Map<number, number>());
@@ -98,6 +102,8 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
   const [playing, setPlaying] = useState(false);
   const [tuning, setTuning] = useState(false);
   const [settings, setSettings] = useState<Settings>(readSettings);
+  /** The tuning as last set, for a drawing made after it (switching looks). */
+  const style = useRef<WindStyle>({ speed: settings.speed, trail: settings.trail, density: settings.density });
   /** The wind drawn at the middle of the map: m/s, and the bearing it blows from. */
   const [centre, setCentre] = useState<{ speed: number; from: number } | null>(null);
 
@@ -114,17 +120,22 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
     if (!controls) { setPlaying(false); setTime(now); }
   }
 
-  // The streamlines, a custom layer on the map, for as long as the layer is on.
+  // The drawing, for as long as the layer is on: streamlines on a custom map
+  // layer, or particles on a canvas over the map. Switching looks hands the
+  // new one the wind and tuning the old one had.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const wind = new WindOverlay(map);
+    const wind = particles ? new WindParticles(map) : new WindOverlay(map);
+    wind.setStyle(style.current);
+    if (blended.current) wind.setField(blended.current);
     overlay.current = wind;
     return () => { wind.remove(); overlay.current = null; };
-  }, [mapRef]);
+  }, [mapRef, particles]);
 
   useEffect(() => {
-    overlay.current?.setStyle({ speed: settings.speed, trail: settings.trail, density: settings.density });
+    style.current = { speed: settings.speed, trail: settings.trail, density: settings.density };
+    overlay.current?.setStyle(style.current);
     try { localStorage.setItem(STORE, JSON.stringify({ ...settings, v: VERSION })); } catch { /* storage blocked */ }
   }, [settings]);
 
@@ -274,6 +285,14 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
             format={v => (v < 12 ? 'SHORT' : v < 30 ? 'MEDIUM' : 'LONG')} onChange={trail => update({ trail })} />
           <Tune label="DENSITY" value={settings.density} min={0.25} max={2} step={0.05}
             format={v => `${v.toFixed(2)}×`} onChange={density => update({ density })} />
+          {/* Particles take their speed band's colour; streamlines are one colour, so have no scale. */}
+          {particles && (
+            <Legend title={`WIND SPEED · ${settings.unit.toUpperCase()}`} steps={WIND_BANDS.map(band => ({
+              color: `rgba(${band.rgb.join(',')},${band.alpha})`,
+              value: String(Math.round(band.from * UNITS[settings.unit])),
+              name: band.name,
+            }))} />
+          )}
           <div className="flex items-center gap-2">
             <Choice label="Wind speed unit" value={settings.unit} onChange={unit => update({ unit })}
               options={(Object.keys(UNITS) as Unit[]).map(unit => ({ value: unit, label: unit.toUpperCase() }))} />
@@ -292,9 +311,9 @@ export default function WindBar({ mapRef, controls = true, onOff }: {
         <AtCentre title={centreBand?.name}>
           {centre && centreBand ? (
             <>
-              {/* Points the way the wind is going. */}
+              {/* Points the way the wind is going; with particles, in its speed band's colour. */}
               <ArrowUp aria-hidden="true" className="w-3 h-3 shrink-0 text-[var(--gold-light)]" strokeWidth={2.2}
-                style={{ transform: `rotate(${centre.from + 180}deg)` }} />
+                style={{ transform: `rotate(${centre.from + 180}deg)`, ...(particles ? { color: `rgb(${centreBand.rgb.join(',')})` } : {}) }} />
               <span className="text-[var(--gold-light)]">{Math.round(centre.speed * UNITS[settings.unit])} {settings.unit.toUpperCase()}</span>
               <span className="text-white/45">FROM {POINTS[Math.round(centre.from / 22.5) % 16]}</span>
             </>

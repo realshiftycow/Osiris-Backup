@@ -2,8 +2,9 @@ import type { WindField } from './wind-field';
 
 /**
  * OSIRIS — the wind data the Wind layer draws: the grid it reads from, and
- * how to read it. The drawing is wind-gl-layer; the curves it draws are made
- * in wind-streamlines.
+ * how to read it. It is drawn as streamlines (wind-gl-layer, whose curves are
+ * made in wind-streamlines) or, with the layer's Particles option, as
+ * particles (wind-particles).
  */
 
 export const WIND_ATTRIBUTION = 'Wind: <a href="https://www.nco.ncep.noaa.gov/pmb/products/gfs/" target="_blank" rel="noopener">NOAA GFS</a>';
@@ -11,24 +12,29 @@ export const WIND_ATTRIBUTION = 'Wind: <a href="https://www.nco.ncep.noaa.gov/pm
 /** A wind grid: rows north to south, `u` east and `v` north. */
 export type WindGrid = Pick<WindField, 'ni' | 'nj' | 'la1' | 'lo1' | 'dx' | 'dy'> & { u: ArrayLike<number>; v: ArrayLike<number> };
 
-/** The Beaufort scale's boundaries, in m/s, and the name each band goes by. */
-export const WIND_BANDS: { from: number; name: string }[] = [
-  { from: 0, name: 'Calm to light breeze' },
-  { from: 3.4, name: 'Gentle breeze' },
-  { from: 5.5, name: 'Moderate breeze' },
-  { from: 8, name: 'Fresh breeze' },
-  { from: 10.8, name: 'Strong breeze' },
-  { from: 13.9, name: 'Near gale' },
-  { from: 17.2, name: 'Gale' },
-  { from: 24.5, name: 'Storm' },
+/**
+ * Speed bands, on the Beaufort scale's boundaries (m/s where each starts), the
+ * name each goes by, and the colour a particle's tail takes in it (the
+ * Particles look; streamlines are one colour). Every tail is a one-pixel line:
+ * that is the canvas's fast hairline path, several times cheaper than anything wider.
+ */
+export const WIND_BANDS: { from: number; name: string; rgb: [number, number, number]; alpha: number }[] = [
+  { from: 0, name: 'Calm to light breeze', rgb: [255, 255, 255], alpha: 0.3 },
+  { from: 3.4, name: 'Gentle breeze', rgb: [255, 255, 255], alpha: 0.55 },
+  { from: 5.5, name: 'Moderate breeze', rgb: [242, 232, 205], alpha: 0.72 },
+  { from: 8, name: 'Fresh breeze', rgb: [230, 211, 163], alpha: 0.82 },
+  { from: 10.8, name: 'Strong breeze', rgb: [224, 192, 100], alpha: 0.9 },
+  { from: 13.9, name: 'Near gale', rgb: [212, 175, 55], alpha: 0.95 },
+  { from: 17.2, name: 'Gale', rgb: [235, 135, 45], alpha: 1 },
+  { from: 24.5, name: 'Storm', rgb: [228, 80, 50], alpha: 1 },
 ];
 
 export interface WindStyle {
-  /** Multiplies how fast the highlights run along the curves. */
+  /** Multiplies how fast the highlights run along the curves, or the particles travel. */
   speed: number;
-  /** How long a highlight's tail is, in frames at 60 fps. */
+  /** How long a highlight's tail is, or a particle's, in frames at 60 fps. */
   trail: number;
-  /** Multiplies how many curves there are. */
+  /** Multiplies how many curves, or particles, there are. */
   density: number;
 }
 export const WIND_STYLE: WindStyle = { speed: 1, trail: 28, density: 1 };

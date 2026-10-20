@@ -510,6 +510,8 @@ export default function Dashboard() {
        turning the layer on brings its controls; off, the layer shows now. */
     wind_controls: true,
     rain_controls: true,
+    /* Wind as particles coloured by speed, the classic look, instead of streamlines. */
+    wind_particles: false,
     terrain_3d: false,
     terrain_elevation: false,
     malware: false,
@@ -774,7 +776,7 @@ export default function Dashboard() {
       setOiFocus(false);
       return;
     }
-    const KEEP = new Set(['day_night', 'live_clouds', 'wind', 'wind_controls', 'rain', 'rain_controls', 'terrain_3d', 'terrain_elevation']);
+    const KEEP = new Set(['day_night', 'live_clouds', 'wind', 'wind_controls', 'wind_particles', 'rain', 'rain_controls', 'terrain_3d', 'terrain_elevation']);
     setActiveLayers(prev => {
       focusSaved.current = prev;
       return Object.fromEntries(Object.entries(prev).map(([k, v]) => [k, KEEP.has(k) ? v : false])) as typeof prev;
