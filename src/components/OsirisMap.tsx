@@ -11,6 +11,7 @@ import { attachOi, type OiGlobe, type OiHover } from '@/lib/oi/globe';
 import { attachHighlights, type Highlighter } from '@/lib/oi/highlights';
 import type { Highlight } from '@/lib/oi/assist/tools';
 import { createSatelliteLayer, parseColor, SAT_MAX_ZOOM, type SatPoint } from '@/lib/satellite-layer';
+import { COMMERCIAL_SAMPLE_RATIO } from '@/lib/aviation';
 import { MAP_DEFAULTS, MAP_PALETTE_KEYS, readMapPalette, satColorFor, type MapPalette } from '@/lib/map-palette';
 import { STYLE_EVENT } from '@/lib/style-tokens';
 import { arrivalBeacons } from '@/lib/malware-intel';
@@ -1876,20 +1877,21 @@ function OsirisMap({ data, activeLayers, onEntityClick, onMouseCoords, onRightCl
   useEffect(() => {
     if (!mapReady) return;
     const toFeatures = (arr: any[], decimate: number = 1) => {
-      let filtered = arr || [];
-      if (decimate > 1) {
-        filtered = filtered.filter((_, i) => i % decimate === 0);
-      }
-      return filtered.map((f: any) => ({
+      const kept = decimate > 1 ? (arr || []).filter((_: any, i: number) => i % decimate === 0) : (arr || []);
+      return kept.map((f: any) => ({
         type: 'Feature' as const, geometry: { type: 'Point' as const, coordinates: [f.lng, f.lat] },
         properties: { callsign: f.callsign, heading: f.heading || 0, alt: f.alt, model: f.model, speed_knots: f.speed_knots, registration: f.registration, icao24: f.icao24 },
       }));
     };
-    setGeo('flights', activeLayers.flights ? toFeatures(data.commercial_flights, 10) : []);
-    setGeo('private-fl', activeLayers.private ? toFeatures(data.private_flights, 2) : []);
-    setGeo('jets', activeLayers.jets ? toFeatures(data.private_jets, 2) : []);
+    /* Draw 10% of the commercial feed while the sub-toggle is on, which is the
+       upstream default; private, jets and military are small enough to draw
+       whole — see lib/aviation. */
+    const commercialRatio = activeLayers.flights_10percent ? COMMERCIAL_SAMPLE_RATIO : 1;
+    setGeo('flights', activeLayers.flights ? toFeatures(data.commercial_flights, commercialRatio) : []);
+    setGeo('private-fl', activeLayers.private ? toFeatures(data.private_flights) : []);
+    setGeo('jets', activeLayers.jets ? toFeatures(data.private_jets) : []);
     setGeo('military', activeLayers.military ? toFeatures(data.military_flights) : []);
-  }, [mapReady, data.commercial_flights, data.private_flights, data.private_jets, data.military_flights, activeLayers.flights, activeLayers.private, activeLayers.jets, activeLayers.military]);
+  }, [mapReady, data.commercial_flights, data.private_flights, data.private_jets, data.military_flights, activeLayers.flights, activeLayers.private, activeLayers.jets, activeLayers.military, activeLayers.flights_10percent]);
 
   /**
    * Pull the palette out of the document whenever it can have changed.

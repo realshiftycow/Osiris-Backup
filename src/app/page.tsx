@@ -464,6 +464,8 @@ export default function Dashboard() {
   // ── DEFAULT: Most layers OFF — fast initial load ──
   const [activeLayers, setActiveLayers] = useState({
     flights: false,
+    /* Show only 10% of commercial flights */
+    flights_10percent: true,
     private: false,
     jets: false,
     military: false,
